@@ -1,0 +1,80 @@
+name: Kurzy ČNB
+
+# ČNB nepovoluje volání z prohlížeče (CORS), proto si kurzy stahujeme sem
+# a aplikace je pak čte z vlastní adresy jako obyčejný soubor.
+on:
+  schedule:
+    - cron: "10 13 * * 1-5" # pracovní dny 15:10 SEČ / 14:10 v zimě (ČNB vydává kolem 14:30 SEČ)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  kurzy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Stáhnout kurzy za letošní i loňský rok
+        run: |
+          python3 - <<'PY'
+          import json, urllib.request, datetime, os
+
+          rok = datetime.date.today().year
+          vysledek = {}
+
+          for r in (rok - 1, rok):
+              url = f"https://api.cnb.cz/cnbapi/exrates/daily-year?year={r}&lang=CZ"
+              req = urllib.request.Request(url, headers={"User-Agent": "vykazy-app"})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                      data = json.load(resp)
+              except Exception as e:
+                  print(f"Rok {r} se nepodařilo stáhnout: {e}")
+                  continue
+              for k in data.get("rates", []):
+                  den = k.get("validFor")
+                  kod = k.get("currencyCode")
+                  mnozstvi = k.get("amount") or 1
+                  kurz = k.get("rate")
+                  if not (den and kod and kurz):
+                      continue
+                  # u měn vyhlašovaných za 100/1000 jednotek by 4 desetinná místa nestačila
+                  vysledek.setdefault(den, {})[kod] = round(kurz / mnozstvi, 8)
+              print(f"Rok {r}: {len(data.get('rates', []))} záznamů")
+
+          if not vysledek:
+              raise SystemExit("Nestáhla se žádná data — soubor nebudeme přepisovat.")
+
+          os.makedirs("public", exist_ok=True)
+          with open("public/kurzy.json", "w", encoding="utf-8") as f:
+              json.dump(vysledek, f, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+          print(f"Uloženo {len(vysledek)} dní.")
+          PY
+
+      - name: Uložit změny
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/kurzy.json
+          if git diff --cached --quiet; then
+            echo "Kurzy se nezměnily."
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            git commit -m "Aktualizace kurzů ČNB"
+            git push
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      # Commit provedený robotem sám nasazení nespustí — musíme ho vyvolat ručně,
+      # jinak by se nové kurzy do aplikace nikdy nedostaly.
+      - name: Nasadit aplikaci s novými kurzy
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy.yml --ref main
