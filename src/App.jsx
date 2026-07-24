@@ -3090,12 +3090,20 @@ function OdooExportDialog({ zaznamy, people, projects, actions, isAdmin, showToa
       const ws = wb.addWorksheet("Sheet1");
       ws.addRow(["Datum", "Projekty", "Zaměstnanec", "Úkol", "CRM příležitost", "Popis", "Čas začátku", "Čas konce", "Množství"]);
 
+      // Datum musí být skutečná datumová hodnota (ne text), jinak Odoo import odmítne.
+      // Zapisujeme sériové číslo Excelu (dny od 1899-12-30) + formát yyyy-mm-dd,
+      // což je nezávislé na časovém pásmu prohlížeče.
+      const naSerial = (iso) => {
+        const d = new Date(iso + "T00:00:00Z");
+        return Math.round((d.getTime() - Date.UTC(1899, 11, 30)) / 86400000);
+      };
+
       const serazene = zaznamy.slice().sort((a, b) => (a.date === b.date ? (a.od || 0) - (b.od || 0) : a.date < b.date ? -1 : 1));
       serazene.forEach((z) => {
         const osoba = people.find((p) => p.id === z.personId);
         const projekt = projects.find((p) => p.id === z.projectId);
-        ws.addRow([
-          `${z.date} 00:00:00`,
+        const radek = ws.addRow([
+          naSerial(z.date),
           odooProjekt(projekt),
           osoba ? odooJmeno(osoba) : "",
           "",
@@ -3105,6 +3113,8 @@ function OdooExportDialog({ zaznamy, people, projects, actions, isAdmin, showToa
           z.do != null ? Math.round(z.do * 1e6) / 1e6 : "",
           Math.round((z.hodiny || 0) * 1e6) / 1e6,
         ]);
+        radek.getCell(1).numFmt = "yyyy-mm-dd";
+        [7, 8, 9].forEach((c) => { radek.getCell(c).numFmt = "#,##0.00"; });
       });
 
       ws.getRow(1).font = { bold: true };
